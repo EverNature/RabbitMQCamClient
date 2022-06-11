@@ -43,13 +43,13 @@ import com.rabbitmq.client.Envelope;
 public class MultipleSend {
     private static final Logger LOGGER = LoggerFactory.getLogger(MultipleSend.class);
     
-    final static String EXCHANGE_CAMERAS = "cameras";
-    final static String DLX_EXCHANGE_NAME = "deadLetter";
-	final static String DLX_QUEUE_NAME = "deadLetterQueue";
+    static final String EXCHANGE_CAMERAS = "cameras";
+    static final String DLX_EXCHANGE_NAME = "deadLetter";
+    static final String DLX_QUEUE_NAME = "deadLetterQueue";
 	
-    final static String PHOTOS_FOLDER = "photos";
-    final static String TO_SEND = "toSend";
-    final static Integer MAX_WAIT = 9;
+    String photosFolder;
+    static final String TO_SEND = "toSend";
+    static final Integer MAX_WAIT = 9;
     boolean stop;
     boolean connected;
     boolean first;
@@ -62,7 +62,8 @@ public class MultipleSend {
     
     public MultipleSend() {
     	random = new Random();
-    	lista = getFileNames(PHOTOS_FOLDER);
+    	photosFolder = FileSystems.getDefault().getPath("resources", "photos").toString();
+    	lista = getFileNames(photosFolder);
     	stop = false;
     	connected = false;
     	first = true;
@@ -71,22 +72,23 @@ public class MultipleSend {
     
     public List<Path> getFileNames(String folder){
     	ForkJoinPool pool = new ForkJoinPool(Runtime.getRuntime().availableProcessors());
-    	List<Path> lista = pool.invoke(new DirectoryTreat(FileSystems.getDefault().getPath(folder).toString()));
+    	List<Path> list = pool.invoke(new DirectoryTreat(FileSystems.getDefault().getPath(folder).toString()));
     	pool.shutdown();
     	
     	try {
             pool.awaitTermination(2000, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
-            e.printStackTrace();
+        	LOGGER.error("InterruptedException happened");
+        	Thread.currentThread().interrupt();
         }
     	
-    	return lista;
+    	return list;
     }
     
     public void register() {
 		try {
 			ConnectionFactory connectionFactory = new ConnectionFactory();
-			InputStream input = new FileInputStream("conf.properties");
+			InputStream input = new FileInputStream(FileSystems.getDefault().getPath("resources", "conf.properties").toString());
 			Properties prop = new Properties();
 
             prop.load(input);
@@ -119,21 +121,21 @@ public class MultipleSend {
 						tag = channel.basicConsume(DLX_QUEUE_NAME, autoack, consumer);
 						connected = true;
 					} catch (ConnectException e) {
-						System.out.println("z");
+						LOGGER.info("Connection unnable to be established. Retrying...");
 					}
 				}
 				
 				if(connected && first) {
-					List<Path> list = getFileNames(TO_SEND);
+					List<Path> list = getFileNames(FileSystems.getDefault().getPath("resources", TO_SEND).toString());
 					for(Path p:list)
 					{
 						byte[] fileContent = Files.readAllBytes(p);
 						sendPhoto(fileContent, p, channel);
-						p.toFile().delete();
+						Files.delete(p);
 					}
 				}
 				
-	        	Thread.sleep(random.nextInt(MAX_WAIT)*1000);
+	        	Thread.sleep(random.nextInt(MAX_WAIT)*(long)1000);
 	        	Path path = lista.get(random.nextInt(lista.size()));
 	        	byte[] fileContent = Files.readAllBytes(path);
 	        	
@@ -144,7 +146,7 @@ public class MultipleSend {
 				} catch (NullPointerException e) {
 					InputStream is = new ByteArrayInputStream(fileContent);
 	            	BufferedImage bi = ImageIO.read(is);
-                	File file = new File(FileSystems.getDefault().getPath(TO_SEND, (new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss").format(new java.util.Date()) + ".jpg")).toString());
+                	File file = new File(FileSystems.getDefault().getPath("resources", TO_SEND, (new SimpleDateFormat("yyyy-MM-dd-HH-mm-ss").format(new java.util.Date()) + ".jpg")).toString());
                     ImageIO.write(bi, "jpg", file);
                     is.close();
 				}
@@ -156,13 +158,14 @@ public class MultipleSend {
 		        connection.close();
 	        }
 		} catch (IOException e) {
-			e.printStackTrace();
+			LOGGER.error("IOException happened");
 		} catch (TimeoutException e) {
-			e.printStackTrace();
+			LOGGER.error("TimeoutException happened");
 		} catch (InterruptedException e) {
-			e.printStackTrace();
+			LOGGER.error("InterruptedException happened");
+			Thread.currentThread().interrupt();
 		} catch (NoSuchAlgorithmException e) {
-			e.printStackTrace();
+			LOGGER.error("NoSuchAlgorithmException happened");
 		}
     }
     
@@ -179,7 +182,7 @@ public class MultipleSend {
         
         AMQP.BasicProperties.Builder builder = new AMQP.BasicProperties().builder();
         
-		Map<String,Object> headerMap = new HashMap<String, Object>();
+		Map<String,Object> headerMap = new HashMap<>();
 		headerMap.put("hash", new String(messageDigest.digest()));
 		headerMap.put("camera_id", uuid.toString());
 		headerMap.put("filename", filename.substring(0, filename.lastIndexOf(".")));
@@ -211,14 +214,19 @@ public class MultipleSend {
                 executor.submit(new Runnable() {
                     public void run() {
                     	try {
+                    		MessageDigest messageDigest = MessageDigest.getInstance("SHA-256");
+                            messageDigest.update(message.getBytes());
+                            properties.getHeaders().put("hash", new String(messageDigest.digest()));
 							channel.basicPublish(EXCHANGE_CAMERAS, "", properties, message.getBytes());
 						} catch (IOException e) {
-							e.printStackTrace();
+							LOGGER.error("IOException happened");
+						} catch (NoSuchAlgorithmException e) {
+							LOGGER.error("NoSuchAlgorithmException happened");
 						}
                     }
                 });
             } catch (Exception e) {
-                LOGGER.error("", e);
+                LOGGER.error("Exception happened");
             }	
 		}
     }
